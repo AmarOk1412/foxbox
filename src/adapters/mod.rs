@@ -5,6 +5,9 @@
 /// An adapter providing time services.
 pub mod clock;
 
+/// An adapter displaying messages on the console.
+pub mod console;
+
 /// A Text To Speak adapter
 #[cfg(target_os = "linux")]
 pub mod tts;
@@ -18,21 +21,20 @@ mod philips_hue;
 /// An adapter providing access to Thinkerbell.
 mod thinkerbell;
 
-/// An adapter providing WebPush services.
+/// An adapter providing `WebPush` services.
 pub mod webpush;
 
 use foxbox_taxonomy::manager::AdapterManager as TaxoManager;
 
-use self::philips_hue::PhilipsHueAdapter;
 use self::thinkerbell::ThinkerbellAdapter;
-use service::ServiceAdapter;
 use traits::Controller;
+
+use openzwave::Adapter as OpenzwaveAdapter;
 
 use std::sync::Arc;
 
 pub struct AdapterManager<T> {
     controller: T,
-    adapters: Vec<Box<ServiceAdapter>>,
 }
 
 impl<T: Controller> AdapterManager<T> {
@@ -40,7 +42,6 @@ impl<T: Controller> AdapterManager<T> {
         debug!("Creating Adapter Manager");
         AdapterManager {
             controller: controller,
-            adapters: Vec::new(),
         }
     }
 
@@ -57,23 +58,20 @@ impl<T: Controller> AdapterManager<T> {
     /// Start all the adapters.
     pub fn start(&mut self, manager: &Arc<TaxoManager>) {
         let c = self.controller.clone(); // extracted here to prevent double-borrow of 'self'
-        self.start_adapter(Box::new(PhilipsHueAdapter::new(c.clone())));
+        console::Console::init(manager).unwrap(); // FIXME: We should have a way to report errors
+        philips_hue::PhilipsHueAdapter::init(manager, c.clone()).unwrap();
         clock::Clock::init(manager).unwrap(); // FIXME: We should have a way to report errors
         webpush::WebPush::init(c, manager).unwrap();
         ip_camera::IPCameraAdapter::init(manager, self.controller.clone()).unwrap();
-        ThinkerbellAdapter::init(manager).unwrap(); // FIXME: no unwrap!
-        self.start_tts(manager);
-    }
+        let scripts_path = &self.controller.get_profile().path_for("thinkerbell_scripts.sqlite");
+        ThinkerbellAdapter::init(manager, scripts_path).unwrap(); // FIXME: no unwrap!
+        let profile_openzwave = &self.controller.get_profile().path_for("openzwave");
+        OpenzwaveAdapter::init(manager, profile_openzwave).unwrap();
 
-    fn start_adapter(&mut self, adapter: Box<ServiceAdapter>) {
-        adapter.start();
-        self.adapters.push(adapter);
+        self.start_tts(manager);
     }
 
     /// Stop all the adapters.
     pub fn stop(&self) {
-        for adapter in &self.adapters {
-            adapter.stop();
-        }
     }
 }

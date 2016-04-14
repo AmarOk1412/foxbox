@@ -11,7 +11,7 @@ use foxbox_taxonomy::adapter::*;
 use foxbox_taxonomy::manager::AdapterManager;
 use foxbox_taxonomy::api::{ Error, InternalError, User };
 use foxbox_taxonomy::services::{ AdapterId, Channel, ChannelKind, Getter, Id, Service, ServiceId, Setter };
-use foxbox_taxonomy::values::{ Range, Type, Value };
+use foxbox_taxonomy::values::{ Type, Value };
 use std::collections::{ HashMap, HashSet };
 use std::sync::Arc;
 use transformable_channels::mpsc::*;
@@ -70,11 +70,9 @@ impl<T: TtsEngine> Adapter for TtsAdapter<T> {
         }).collect()
     }
 
-    fn register_watch(&self, mut watch: Vec<(Id<Getter>, Option<Range>)>,
-        _: Box<ExtSender<WatchEvent>>) ->
-           ResultMap<Id<Getter>, Box<AdapterWatchGuard>, Error>
+    fn register_watch(&self, mut watch: Vec<WatchTarget>) -> WatchResult
     {
-        watch.drain(..).map(|(id, _)| {
+        watch.drain(..).map(|(id, _, _)| {
             (id.clone(), Err(Error::GetterDoesNotSupportWatching(id)))
         }).collect()
     }

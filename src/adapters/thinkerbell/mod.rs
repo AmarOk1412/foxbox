@@ -4,7 +4,7 @@ use foxbox_taxonomy::api::{ Error, InternalError, User };
 use foxbox_taxonomy::manager::*;
 use foxbox_taxonomy::services::{ Setter, Getter, AdapterId, ServiceId, Service, Channel, ChannelKind };
 use foxbox_taxonomy::util::Id;
-use foxbox_taxonomy::values::{ Range, Duration, Type, Value, TypeError, OnOff };
+use foxbox_taxonomy::values::{ Duration, Type, Value, TypeError, OnOff };
 
 use foxbox_thinkerbell::compile::ExecutableDevEnv;
 use foxbox_thinkerbell::manager::{ ScriptManager, ScriptId, Error as ScriptManagerError };
@@ -14,6 +14,7 @@ use timer;
 use transformable_channels::mpsc::*;
 
 use std::collections::{ HashMap, HashSet };
+use std::fmt;
 use std::path::Path;
 use std::sync::{ Arc, Mutex };
 use std::thread;
@@ -22,11 +23,11 @@ static ADAPTER_NAME: &'static str = "Thinkerbell adapter (built-in)";
 static ADAPTER_VENDOR: &'static str = "team@link.mozilla.org";
 static ADAPTER_VERSION: [u32;4] = [0, 0, 0, 0];
 
-/// ThinkerbellAdapter hooks up the rules engine (if this, then that) as an adapter.
+/// `ThinkerbellAdapter` hooks up the rules engine (if this, then that) as an adapter.
 ///
 /// Each "rule", or "script", is a JSON-serialized structure according to Thinkerbell conventions.
 ///
-/// This adapter exposes a root service, with one AddThinkerbellRule setter (to add a new rule).
+/// This adapter exposes a root service, with one `AddThinkerbellRule` setter (to add a new rule).
 /// Each rule that has been added is exposed as its own service, with the following getters/setters:
 /// - Set Enabled (setter) -- toggles whether or not the script is enabled
 /// - Get Enabled (getter) -- returns whether or not the script is enabled
@@ -36,7 +37,7 @@ static ADAPTER_VERSION: [u32;4] = [0, 0, 0, 0];
 #[derive(Clone)]
 pub struct ThinkerbellAdapter {
 
-    /// The sending end of the channel for sending messages to ThinkerbellAdapter's main loop.
+    /// The sending end of the channel for sending messages to `ThinkerbellAdapter`'s main loop.
     tx: Arc<Mutex<RawSender<ThinkAction>>>,
 
     /// A reference to the AdapterManager.
@@ -57,6 +58,12 @@ struct ThinkerbellExecutionEnv {
     // FIXME: Timer's not clonable, so we should only use one, right? Does this have to be mutexed?
     timer: Arc<Mutex<timer::Timer>>
 }
+impl fmt::Debug for ThinkerbellExecutionEnv {
+    fn fmt(&self, _: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        Ok(())
+    }
+}
+
 
 impl ExecutableDevEnv for ThinkerbellExecutionEnv {
     // We don't support watches, so we don't care about the type of WatchGuard.
@@ -76,8 +83,8 @@ impl ExecutableDevEnv for ThinkerbellExecutionEnv {
     }
 }
 
-/// Convert a ScriptManagerError into an API Error.
-/// We can't implement From<T> because ScriptManagerError is in a different crate.
+/// Convert a `ScriptManagerError` into an API Error.
+/// We can't implement From<T> because `ScriptManagerError` is in a different crate.
 fn sm_error(e: ScriptManagerError) -> Error {
     Error::InternalError(InternalError::GenericError(format!("{:?}", e)))
 }
@@ -112,11 +119,11 @@ impl Adapter for ThinkerbellAdapter {
         }).collect()
     }
 
-    fn send_values(&self, values: HashMap<Id<Setter>, Value>, _: User) -> ResultMap<Id<Setter>, (), Error> {
+    fn send_values(&self, values: HashMap<Id<Setter>, Value>, user: User) -> ResultMap<Id<Setter>, (), Error> {
         values.iter()
             .map(|(id, value)| {
                 let (tx, rx) = channel();
-                let _ = self.tx.lock().unwrap().send(ThinkAction::RespondToSetter(tx, id.clone(), value.clone()));
+                let _ = self.tx.lock().unwrap().send(ThinkAction::RespondToSetter(tx, id.clone(), value.clone(), user.clone()));
                 match rx.recv() {
                     Ok(result) => (id.clone(), result),
                     // If an error occurs, the channel died!
@@ -127,10 +134,9 @@ impl Adapter for ThinkerbellAdapter {
             .collect()
     }
 
-    fn register_watch(&self, mut watch: Vec<(Id<Getter>, Option<Range>)>,
-        _: Box<ExtSender<WatchEvent>>) ->
-            ResultMap<Id<Getter>, Box<AdapterWatchGuard>, Error> {
-        watch.drain(..).map(|(id, _)| {
+    fn register_watch(&self, mut watch: Vec<WatchTarget>) -> WatchResult
+    {
+        watch.drain(..).map(|(id, _, _)| {
             (id.clone(), Err(Error::GetterDoesNotSupportWatching(id)))
         }).collect()
     }
@@ -141,7 +147,7 @@ enum ThinkAction {
     AddRuleService(Id<ScriptId>),
     RemoveRuleService(Id<ScriptId>),
     RespondToGetter(RawSender<Result<Option<Value>, Error>>, Id<Getter>),
-    RespondToSetter(RawSender<Result<(), Error>>, Id<Setter>, Value),
+    RespondToSetter(RawSender<Result<(), Error>>, Id<Setter>, Value, User),
 }
 
 /// An internal data structure to track getters and setters.
@@ -156,6 +162,7 @@ struct ThinkerbellRule {
 
 impl ThinkerbellAdapter {
 
+    #[allow(cyclomatic_complexity)]
     fn main(
         &self,
         rx: Receiver<ThinkAction>,
@@ -163,7 +170,7 @@ impl ThinkerbellAdapter {
     ) {
         // Store an in-memory list of all of the rules (their getters, setters, etc.).
         // We need to track these to respond to getter/setter requests.
-        let mut rules = Vec::new();
+        let mut rules: Vec<ThinkerbellRule> = Vec::new();
 
         'recv: for action in rx {
             match action {
@@ -171,6 +178,15 @@ impl ThinkerbellAdapter {
                 // The script has already been started with ScriptManager at this point;
                 // we're just adding the adapter's services now.
                 ThinkAction::AddRuleService(script_id) => {
+                    // If the rule already existed (i.e. we're overwriting the original source),
+                    // we don't need to re-add a Service. This is safe, because a Service doesn't
+                    // know or care about the contents of the rule, just the ID.
+                    for ref rule in &rules {
+                        if rule.script_id == script_id {
+                            info!("No need to add new ThinkerbellRule; ID '{}' already exists.", &script_id);
+                            continue 'recv;
+                        }
+                    }
                     match self.add_rule_service(script_id) {
                         Ok(rule) => {
                             rules.push(rule);
@@ -204,8 +220,8 @@ impl ThinkerbellAdapter {
                             let _ = tx.send(Ok(Some(Value::OnOff(if is_enabled { OnOff::On } else { OnOff::Off }))));
                             continue 'recv;
                         } else if getter_id == rule.getter_source_id {
-                            match script_manager.get_source(&rule.script_id) {
-                                Ok(source) => {
+                            match script_manager.get_source_and_owner(&rule.script_id) {
+                                Ok((source, _)) => {
                                     let _ = tx.send(Ok(Some(Value::String(Arc::new(source.to_owned())))));
                                 },
                                 Err(e) => {
@@ -218,13 +234,13 @@ impl ThinkerbellAdapter {
                     let _ = tx.send(Err(Error::InternalError(InternalError::NoSuchGetter(getter_id.clone()))));
                 },
                 // Respond to a pending Setter request.
-                ThinkAction::RespondToSetter(tx, setter_id, value) => {
+                ThinkAction::RespondToSetter(tx, setter_id, value, user) => {
                     // Add a new rule (with the given JSON source).
                     if setter_id == self.setter_add_rule_id {
                         match value {
                             Value::ThinkerbellRule(ref rule_source) => {
                                 let script_id = Id::new(&rule_source.name);
-                                let _ = tx.send(script_manager.put(&script_id, &rule_source.source).map_err(sm_error));
+                                let _ = tx.send(script_manager.put(&script_id, &rule_source.source, &user).map_err(sm_error));
                                 let _ = self.tx.lock().unwrap().send(ThinkAction::AddRuleService(script_id.clone()));
                             },
                             _ => {
@@ -292,7 +308,7 @@ impl ThinkerbellAdapter {
             last_seen: None,
             tags: HashSet::new(),
             mechanism: Getter {
-                kind: ChannelKind::OnOff,
+                kind: ChannelKind::ThinkerbellRuleOn,
                 updated: None
             },
         }));
@@ -318,7 +334,7 @@ impl ThinkerbellAdapter {
             last_seen: None,
             tags: HashSet::new(),
             mechanism: Setter {
-                kind: ChannelKind::OnOff,
+                kind: ChannelKind::ThinkerbellRuleOn,
                 updated: None
             },
         }));
@@ -348,7 +364,7 @@ impl ThinkerbellAdapter {
     }
 
     /// Everything is initialized here, but the real work happens in the main() loop.
-    pub fn init(manager: &Arc<AdapterManager>) -> Result<(), Error> {
+    pub fn init(manager: &Arc<AdapterManager>, scripts_path: &str) -> Result<(), Error> {
         let adapter_id = Id::new("thinkerbell-adapter");
         let setter_add_rule_id = Id::new("thinkerbell-add-rule");
         let root_service_id = Id::new("thinkerbell-root-service");
@@ -361,7 +377,7 @@ impl ThinkerbellAdapter {
         };
 
         let mut script_manager = try!(
-            ScriptManager::new(env, Path::new("./scripts.sqlite"), Box::new(tx_env)).map_err(sm_error));
+            ScriptManager::new(env, Path::new(scripts_path), Box::new(tx_env)).map_err(sm_error));
 
         let result_map = try!(script_manager.load().map_err(sm_error));
 
@@ -378,7 +394,7 @@ impl ThinkerbellAdapter {
             setter_add_rule_id: setter_add_rule_id.clone(),
         };
 
-        // Add the adapter and the root service (the one that exposes AddThinkerbellRule for adding new rules).
+        // Add the adapter and the root service (the one that exposes `AddThinkerbellRule` for adding new rules).
         try!(manager.add_adapter(Arc::new(adapter.clone())));
         try!(manager.add_service(Service::empty(root_service_id.clone(), adapter_id.clone())));
         try!(manager.add_setter(Channel {

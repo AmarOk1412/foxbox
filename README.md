@@ -9,33 +9,34 @@
 
 ### Rust
 
-We're using Rust for the daemon/server. Currently v1.8.x nightly is required.
+We're using Rust for the daemon/server.
 
-To determine which version of rust is being used, check the
-[.travis.yml](https://github.com/fxbox/foxbox/blob/master/.travis.yml) file.
+Currently a fairly recent nightly is required. To determine which version of rust is being used, check the [.travis.yml](https://github.com/fxbox/foxbox/blob/master/.travis.yml) file.
 
 Look for these 2 lines near the top of the file:
 ```yaml
 rust:
-    - nightly-2016-03-07
+    - nightly-YYYY-MM-DD
 ```
-You should then be able to then use:
-```
-multirust override nightly-2016-03-07
-```
-to get the same version of toolchain that's being used for the travis tests.
 
-Incidently, nightly-2016-03-07 corresponds to:
+It's recommended that you use [`multirust`](https://github.com/brson/multirust) to install and switch between versions of Rust. You should then be able to then use:
+```
+cd /your/path/to/foxbox     # Required, otherwise you might replace rustc for another project
+multirust override nightly-YYYY-MM-DD   # Replace with the correct date you found
+```
+After that, you should be all set in regard to compiling the project.
+
+#### :warning: Warning
+
+Sometimes, there might be a 1-day-difference between the date shown in `.travis.yml` and the one reported by `rustc`. For example [nightly-2016-04-06](https://static.rust-lang.org/dist/2016-04-06/) corresponds to:
 ```bash
 $ rustc -V
-rustc 1.9.0-nightly (998a6720b 2016-03-07)
+rustc 1.9.0-nightly (241a9d0dd 2016-04-05)
 ```
-
-It's recommended that you use [`multirust`](https://github.com/brson/multirust)
-to install and switch between versions of Rust.
 
 #### Build requirements
 
+<<<<<<< HEAD
 | Dependency   | Debian/Raspian        | Fedora          | Arch             | OS X (Homebrew) |
 | ------------ | --------------------- | --------------- | ---------------- | --------------- |
 | `libupnp`    | `libupnp-dev`         | `libupnp-devel` | `libupnp`        | `libupnp`       |
@@ -44,6 +45,16 @@ to install and switch between versions of Rust.
 | `libsqlite3` | `libsqlite3-dev`      | `sqlite-devel`  | `sqlite`         | `sqlite`        |
 | `libespeak`  | `libsespeak-dev`      | `espeak-devel`  | `?`              | `?`             |
 | `libdbus`    | `?`                   | `dbus-devel`    | `?`              | `?`             |
+=======
+| Dependency   | Debian/Raspian        | Fedora          | Arch               | OS X (Homebrew) |
+| ------------ | --------------------- | --------------- | ------------------ | --------------- |
+| `libupnp`    | `libupnp-dev`         | `libupnp-devel` | `extra/libupnp`    | `libupnp`       |
+| `libssl`     | `libssl-dev`          | `openssl-devel` | via `base-devel`   | `openssl`       |
+| `libavahi`   | `libavahi-client-dev` | `avahi-devel`   | `extra/avahi`      | `n.a.`          |
+| `libsqlite3` | `libsqlite3-dev`      | `sqlite-devel`  | `core/sqlite`      | `sqlite`        |
+| `libespeak`  | `libsespeak-dev`      | `espeak-devel`  | `community/espeak` | `?`             |
+| `libdbus`    | `?`                   | `dbus-devel`    | `core/libdbus`     | `?`             |
+>>>>>>> projet_original_master/master
 
 ### Node
 
@@ -81,33 +92,23 @@ $ git clone git@github.com:<username>/foxbox.git
 $ cd foxbox
 ```
 
+## Build time options
+### Disable authentication
+You may want to disable endpoints authentication to ease your development process. You can do that by removing `authentication` from the `default` feature in the `Cargo.toml` file.
+
+```conf
+[features]
+default = []
+authentication = []
+```
+
 ## Running the daemon
 
 ```bash
 $ cargo run
 ```
 
-To run with custom local host name (eg. foxbox.local):
-
-```bash
-$ cargo run -- -l foxbox
-```
-
-__NOTE:__ currently changing of host name is done via ```avahi-daemon``` and therefore supported only on Linux platform. To be able to change local host machine name user must be either included into ```netdev``` group or allow any other suitable user group to manage host name by adding the following policy to ```/etc/dbus-1/system.d/avahi-dbus.conf```:
-```xml
-<policy group="any_suitable_group_name">
-  <allow send_destination="org.freedesktop.Avahi"/>
-  <allow receive_sender="org.freedesktop.Avahi"/>
-</policy>
-```
-
-Alternatively you can build the app without running it via:
-
-```bash
-$ cargo build
-```
-
-Foxbox also takes a number of command line parameters:
+There are several command line options to start the daemon:
 
 ```bash
 -v, --verbose : Toggle verbose output.
@@ -124,33 +125,66 @@ Foxbox also takes a number of command line parameters:
 --dns-domain <domain> : Set the top level domain for public DNS. If omitted, the tunnel is disabled
 --dns-api <url> : Set the DNS API endpoint
 --remote-name: external domain of foxbox
-
 ```
 
-Example:
+Currently you would likely want to start the daemon like this:
+
 ```bash
+cargo run -- -r http://knilxof.org:4242 --disable-tls
+```
+
+That means that your foxbox will be using our dev [registration server](https://wiki.mozilla.org/Connected_Devices/Projects/Project_Link/Registration_Server) and you will be disabling [TLS](https://wiki.mozilla.org/Connected_Devices/Projects/Project_Link/TLS) support. We hope to have out-of-the-box TLS support ready pretty soon, but for now disabling it is the easiest way to run foxbox.
+
+### Enable tunneling support
+
+If you want to access your foxbox from outside of the network where it is running, you'll need to enable [tunneling](https://wiki.mozilla.org/Connected_Devices/Projects/Project_Link/Tunneling) support. To do that you need to specify the address of the tunneling server that you want to use, the shared secret for this server (if any) and the remote name that you want to use to access to your foxbox from outside of your foxbox' local network.
+
+```bash
+<<<<<<< HEAD
 # To start foxbox with the IP tunneling, HTTP only:
 $ cargo run -- -r http://someserver.org:4242 -t someserver.org:443 -s secret --remote-name foxbox.someserver.org --disable-tls
 # To change the philips hue nupnp server location to http://localhost:8002
 $ cargo run -- -c "philips_hue;nupnp_url;http://localhost:8002/"
+=======
+cargo run -- -r http://knilxof.org:4242 -t knilxof.org:443 -s secret --remote-name yourname.knilxof.org --disable-tls
+>>>>>>> projet_original_master/master
 ```
 
-## Build time options
-### Disable authentication
-You may want to disable endpoints authentication to ease your development process. You can do that by removing `authentication` from the `default` feature in the `Cargo.toml` file.
+In the example above, `knilxof.org:443` is the location of our tunneling dev server, which has a not-that-secret-anymore value that you'll need to ask for on [IRC](https://wiki.mozilla.org/Connected_Devices/Projects/Project_Link#IRC). You are supposed to substitute `<yourname>` by the subdomain of your choice, but take into account that you'll need to keep the domain name of the tunneling server, in this case `.knilxof.org`. Starting the daemon with the command line options above you should be able to access your foxbox through `http://yourname.knilxof.org`.
 
-```conf
-[features]
-default = []
-authentication = []
+### Custom local hostname
+
+To run with custom local host name (eg. foxbox.local):
+
+```bash
+$ cargo run -- -l foxbox
 ```
+
+__NOTE:__ currently changing of host name is done via ```avahi-daemon``` and therefore supported only on Linux platform. To be able to change local host machine name user must be either included into ```netdev``` group or allow any other suitable user group to manage host name by adding the following policy to ```/etc/dbus-1/system.d/avahi-dbus.conf```:
+```xml
+<policy group="any_suitable_group_name">
+  <allow send_destination="org.freedesktop.Avahi"/>
+  <allow receive_sender="org.freedesktop.Avahi"/>
+</policy>
+```
+
+### Custom Philips Hue nUPNP server
+
+```
+$ cargo run -- -c "philips_hue;nupnp_url;http://localhost:8002/"
+```
+
+## Interacting with the daemon
+
+Once you have your foxbox up and running you can try our [demo application](https://github.com/fxbox/app) by browsing to [https://fxbox.github.io/app](https://fxbox.github.io/app).
+
+Alternatively, you can use the foxbox' current [REST API](https://wiki.mozilla.org/Connected_Devices/Projects/Project_Link/Taxonomy#Current_REST_API)
 
 ## Rust tests
 
 ```bash
 $ cargo test
 ```
-
 
 ## Selenium tests
 
@@ -191,7 +225,7 @@ For an extensive write-up about cross compiling Rust programs see:
 Cross compiling on Mac hasn't been documented. A PR is welcomed. :wink:
 
 
-## Notes for Mac OS X
+## Notes for Mac OS X with Brew
 
 You'll need some dependencies installed to build.
 
@@ -199,10 +233,12 @@ You'll need some dependencies installed to build.
 $ brew install openssl libupnp sqlite
 ```
 
-This is required to build the openssl crate using homebrew's openssl:
+This is required to build/link the openssl crate and foxbox using homebrew's openssl:
 
 ``` bash
 $ export DEP_OPENSSL_INCLUDE=/usr/local/opt/openssl/include/
+$ export OPENSSL_LIB_DIR=/usr/local/opt/openssl/lib
+$ export EXTRA_LDFLAGS=-L/usr/local/opt/openssl/lib
 ```
 
 Previous versions of these instructions described setting ```OPENSSL_INCLUDE_DIR```.

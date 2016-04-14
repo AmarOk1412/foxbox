@@ -2,30 +2,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-//! Adapter for WebPush.
+//! Adapter for `WebPush`.
 //!
 //! Implemented as described in the draft IETF RFC:
 //! https://tools.ietf.org/html/draft-ietf-webpush-protocol-04
 //!
 //! Encryption and sending of push notifications is controlled by the
-//! "webpush" build feature. Older versions of OpenSSL (< 1.0.0) are
+//! "webpush" build feature. Older versions of `OpenSSL` (< 1.0.0) are
 //! missing the necessary APIs to support the implementation.
 //!
 
-#[cfg(not(target_os = "macos"))]
 mod crypto;
 mod db;
 
 use foxbox_taxonomy::api::{ Error, InternalError, User };
 use foxbox_taxonomy::manager::*;
 use foxbox_taxonomy::services::*;
-use foxbox_taxonomy::values::{ Range, Type, Value, Json };
+use foxbox_taxonomy::values::{ Type, Value, Json };
 
-#[cfg(not(target_os = "macos"))]
 use hyper::header::{ ContentEncoding, Encoding };
-#[cfg(not(target_os = "macos"))]
 use hyper::Client;
-#[cfg(not(target_os = "macos"))]
 use hyper::client::Body;
 use rusqlite::{ self };
 use serde_json;
@@ -41,6 +37,8 @@ header! { (EncryptionKey, "Encryption-Key") => [String] }
 static ADAPTER_NAME: &'static str = "WebPush adapter (built-in)";
 static ADAPTER_VENDOR: &'static str = "team@link.mozilla.org";
 static ADAPTER_VERSION: [u32;4] = [0, 0, 0, 0];
+// This user identifier will be used when authentication is disabled.
+static NO_AUTH_USER_ID: i32 = -1;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Subscription {
@@ -81,7 +79,6 @@ pub struct NotifySetter {
 }
 
 impl Subscription {
-    #[cfg(not(target_os = "macos"))]
     fn notify(&self, message: &str) {
         let enc = match self::crypto::encrypt(&self.public_key, message.to_owned()) {
             Some(x) => x,
@@ -103,11 +100,6 @@ impl Subscription {
             };
 
         info!("notified subscription {} (status {:?})", self.push_uri, res.status);
-    }
-
-    #[cfg(target_os = "macos")]
-    fn notify(&self, _: &str) {
-        warn!("discard notification for subscription {}, webpush disabled at build time", self.push_uri);
     }
 }
 
@@ -172,9 +164,19 @@ impl<C: Controller> Adapter for WebPush<C> {
         &ADAPTER_VERSION
     }
 
-    fn fetch_values(&self, mut set: Vec<Id<Getter>>, _: User) -> ResultMap<Id<Getter>, Option<Value>, Error> {
+    fn fetch_values(&self, mut set: Vec<Id<Getter>>, user: User) -> ResultMap<Id<Getter>, Option<Value>, Error> {
         set.drain(..).map(|id| {
-            let user_id = 1; // FIXME: currently logged in user
+            let user_id = if cfg!(feature = "authentication") {
+                match user {
+                    User::None => {
+                        return (id,
+                                Err(Error::InternalError(InternalError::InvalidInitialService)));
+                    },
+                    User::Id(id) => id
+                }
+            } else {
+                NO_AUTH_USER_ID
+            };
 
             macro_rules! getter_api {
                 ($getter:ident, $getter_id:ident, $getter_type:ident) => (
@@ -196,9 +198,19 @@ impl<C: Controller> Adapter for WebPush<C> {
         }).collect()
     }
 
-    fn send_values(&self, mut values: HashMap<Id<Setter>, Value>, _: User) -> ResultMap<Id<Setter>, (), Error> {
+    fn send_values(&self, mut values: HashMap<Id<Setter>, Value>, user: User) -> ResultMap<Id<Setter>, (), Error> {
         values.drain().map(|(id, value)| {
-            let user_id = 1; // FIXME: currently logged in user
+            let user_id = if cfg!(feature = "authentication") {
+                match user {
+                    User::None => {
+                        return (id,
+                                Err(Error::InternalError(InternalError::InvalidInitialService)));
+                    },
+                    User::Id(id) => id
+                }
+            } else {
+                NO_AUTH_USER_ID
+            };
 
             let arc_json_value = match value {
                 Value::Json(v) => v,
@@ -229,11 +241,9 @@ impl<C: Controller> Adapter for WebPush<C> {
         }).collect()
     }
 
-    fn register_watch(&self, mut watch: Vec<(Id<Getter>, Option<Range>)>,
-        _: Box<ExtSender<WatchEvent>>) ->
-           ResultMap<Id<Getter>, Box<AdapterWatchGuard>, Error>
+    fn register_watch(&self, mut watch: Vec<WatchTarget>) -> WatchResult
     {
-        watch.drain(..).map(|(id, _)| {
+        watch.drain(..).map(|(id, _, _)| {
             (id.clone(), Err(Error::GetterDoesNotSupportWatching(id)))
         }).collect()
     }

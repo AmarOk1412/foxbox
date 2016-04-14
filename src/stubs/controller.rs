@@ -6,19 +6,16 @@ extern crate rand;
 
 use config_store::ConfigService;
 use foxbox_users::UsersManager;
-use iron::{Request, Response, IronResult};
-use iron::status::Status;
 use profile_service::{ ProfilePath, ProfileService };
 use std::vec::IntoIter;
 use serde_json;
-use service::{ Service, ServiceProperties };
 use std::io;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tls::CertificateManager;
+use tls::{ CertificateManager, CertificateRecord, SniSslContextProvider };
 use traits::Controller;
 use upnp::UpnpManager;
 use ws;
@@ -42,31 +39,16 @@ impl ControllerStub {
     }
 }
 
+impl Default for ControllerStub {
+    fn default() -> Self {
+        ControllerStub::new()
+    }
+}
+
 impl Controller for ControllerStub {
     fn run(&mut self, _: &AtomicBool) {}
-    fn dispatch_service_request(&self, id: String, request: &mut Request)
-        -> IronResult<Response> {
-        Ok(Response::with(Status::Ok))
-    }
     fn adapter_started(&self, _: String) {}
     fn adapter_notification(&self, _: serde_json::value::Value) {}
-    fn add_service(&self, _: Box<Service>) {}
-    fn remove_service(&self, _: String) {}
-    fn get_service_properties(&self, id: String) -> Option<ServiceProperties> {
-        None
-    }
-    fn services_count(&self) -> usize {
-        0
-    }
-    fn services_as_json(&self) -> Result<String, serde_json::error::Error> {
-        Ok(String::from(""))
-    }
-    fn get_http_root_for_service(&self, service_id: String) -> String {
-        String::from("")
-    }
-    fn get_ws_root_for_service(&self, service_id: String) -> String {
-        String::from("")
-    }
     fn http_as_addrs(&self) -> Result<IntoIter<SocketAddr>, io::Error> {
         ("localhost", 3000).to_socket_addrs()
     }
@@ -79,8 +61,8 @@ impl Controller for ControllerStub {
     fn remove_websocket(&mut self, socket: ws::Sender) {}
     fn broadcast_to_websockets(&self, data: serde_json::value::Value) {}
 
-    fn get_config(&self) -> &ConfigService {
-        &self.config
+    fn get_config(&self) -> Arc<ConfigService> {
+        self.config.clone()
     }
     fn get_upnp_manager(&self) -> Arc<UpnpManager> {
         Arc::new(UpnpManager::new())
@@ -99,7 +81,14 @@ impl Controller for ControllerStub {
         String::from("localhost")
     }
 
+    fn get_box_certificate(&self) -> io::Result<CertificateRecord> {
+        CertificateRecord::new_for_test("foxbox.local".to_owned(),
+                                        PathBuf::from("a/file.pem"),
+                                        PathBuf::from("b/file.pem"),
+                                        "abcdef".to_owned())
+    }
+
     fn get_certificate_manager(&self) -> CertificateManager {
-       CertificateManager::new(PathBuf::from(current_dir!()))
+       CertificateManager::new(PathBuf::from(current_dir!()), Box::new(SniSslContextProvider::new()))
     }
 }
